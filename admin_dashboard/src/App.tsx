@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { Login } from './components/Login';
 import {
   ShoppingBag,
   Settings,
@@ -84,19 +85,22 @@ const App: React.FC = () => {
   const [currentView, setCurrentView]       = useState<'orders' | 'menu'>('orders');
   const [products, setProducts]             = useState<any[]>([]);
 
+  // ── Auth State ───────────────────────────────
+  const [session, setSession] = useState<any>(null);
+  const [isAdmin, setIsAdmin] = useState<boolean>(false);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [loginError, setLoginError] = useState<string | null>(null);
+
   // ── Fetch full orders (with items) ──────────
   const fetchOrders = useCallback(async (silent = false) => {
+    if (!session || !isAdmin) return;
     if (!silent) setLoading(true);
     setError(null);
     try {
       const { data, error: err } = await supabase
         .from('orders')
-        .select(`
-          *,
-          order_items (*)
-        `)
+        .select(`*, order_items (*)`)
         .order('created_at', { ascending: false });
-
       if (err) throw err;
       setOrders(data as Order[]);
     } catch (e: unknown) {
@@ -105,10 +109,11 @@ const App: React.FC = () => {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, []);
+  }, [session, isAdmin]);
 
   // ── Menu Management ──────────────────────────
   const fetchProducts = useCallback(async () => {
+    if (!session || !isAdmin) return;
     try {
       const { data, error: err } = await supabase.from('products').select('*').order('category', { ascending: true }).order('id', { ascending: true });
       if (err) throw err;
@@ -116,9 +121,10 @@ const App: React.FC = () => {
     } catch (e: any) {
       console.error('Failed to fetch products', e);
     }
-  }, []);
+  }, [session, isAdmin]);
 
   const toggleProductAvailability = async (productId: string, currentAvail: boolean) => {
+    if (!session || !isAdmin) return;
     const newStatus = !currentAvail;
     setProducts(prev => prev.map(p => p.id === productId ? { ...p, is_available: newStatus } : p));
     try {
@@ -130,8 +136,69 @@ const App: React.FC = () => {
     }
   };
 
+  // ── Auth Handling ────────────────────────────
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) {
+        checkAdminRole(session.user.id);
+      } else {
+        setAuthLoading(false);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) {
+        checkAdminRole(session.user.id);
+      } else {
+        setIsAdmin(false);
+        setAuthLoading(false);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const checkAdminRole = async (userId: string) => {
+    try {
+      setAuthLoading(true);
+      setLoginError(null);
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('role')
+        .eq('user_id', userId)
+        .single();
+      
+      if (error) {
+        throw error;
+      }
+      
+      if (data?.role === 'admin') {
+        setIsAdmin(true);
+      } else {
+        setLoginError(`Access Denied: You do not have admin privileges. Current role: ${data?.role || 'none'}`);
+        await supabase.auth.signOut();
+      }
+    } catch (e: any) {
+      console.error('Error checking role:', e);
+      let errorMsg = e.message;
+      if (e.code === 'PGRST116') {
+        errorMsg = 'Profile not found. Ensure your user ID exists in the profiles table.';
+      }
+      setLoginError(`Authentication Error: Could not verify admin role. Detail: ${errorMsg}`);
+      await supabase.auth.signOut();
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
   // ── Real-time subscription ───────────────────
   useEffect(() => {
+    if (!session || !isAdmin) return;
+
     fetchOrders();
     fetchProducts();
 
@@ -150,24 +217,21 @@ const App: React.FC = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [fetchOrders, fetchProducts]);
+  }, [fetchOrders, fetchProducts, session, isAdmin]);
 
   // ── Update order status ──────────────────────
   const updateOrderStatus = async (orderId: string, newStatus: Order['status']) => {
-    // 1. Optimistic local update
+    if (!session || !isAdmin) return;
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o));
-    
     setUpdatingStatus(prev => ({ ...prev, [orderId]: true }));
     try {
       const { error: err } = await supabase
         .from('orders')
         .update({ status: newStatus })
         .eq('id', orderId);
-
       if (err) throw err;
     } catch (e: any) {
       alert(`Failed to update status: ${e.message}`);
-      // 2. Rollback/Refetch on error
       fetchOrders();
     } finally {
       setUpdatingStatus(prev => ({ ...prev, [orderId]: false }));
@@ -299,24 +363,21 @@ const App: React.FC = () => {
 
   // ── Clear all orders ───────────────────────────
   const clearAllOrders = async () => {
+    if (!session || !isAdmin) return;
     setClearingAll(true);
     try {
-      // Must delete order_items first due to foreign key constraint
       const { error: itemsErr } = await supabase
         .from('order_items')
         .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000'); // deletes all rows
-
+        .neq('id', '00000000-0000-0000-0000-000000000000');
       if (itemsErr) throw itemsErr;
 
       const { error: ordersErr } = await supabase
         .from('orders')
         .delete()
-        .neq('id', '00000000-0000-0000-0000-000000000000'); // deletes all rows
-
+        .neq('id', '00000000-0000-0000-0000-000000000000');
       if (ordersErr) throw ordersErr;
 
-      // Clear local state
       setOrders([]);
       setExpandedOrders({});
       setDoneItems({});
@@ -329,6 +390,18 @@ const App: React.FC = () => {
   };
 
   // ── Render ───────────────────────────────────
+  if (authLoading) {
+    return (
+      <div style={{ display: 'flex', height: '100vh', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+        <Loader2 size={32} className="spin" color="var(--accent-blue)" />
+      </div>
+    );
+  }
+
+  if (!session || !isAdmin) {
+    return <Login customError={loginError} />;
+  }
+
   return (
     <div style={{ display: 'flex', height: '100vh', background: 'var(--bg-primary)' }}>
 
@@ -474,7 +547,7 @@ const App: React.FC = () => {
           <button className="btn-primary" style={{ width: '100%' }} onClick={() => { fetchOrders(); fetchProducts(); }}>
             <RefreshCw size={14} style={{ marginRight: 6 }} />Refresh
           </button>
-          <button className="btn-ghost" style={{ justifyContent: 'flex-start', gap: '12px', color: '#ff453a' }}>
+          <button className="btn-ghost" style={{ justifyContent: 'flex-start', gap: '12px', color: '#ff453a' }} onClick={() => supabase.auth.signOut()}>
             <LogOut size={18} />
             <span style={{ fontWeight: 600, fontSize: '14px' }}>Logout</span>
           </button>
@@ -531,30 +604,43 @@ const App: React.FC = () => {
                   <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Toggle item availability on the Kiosk</p>
                 </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px' }}>
-                {products.map(product => (
-                  <div key={product.id} className="ops-card" style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '16px', opacity: product.is_available ? 1 : 0.6 }}>
-                    <img src={'http://127.0.0.1:8080/' + product.image} alt={product.name} style={{ width: '64px', height: '64px', borderRadius: '12px', objectFit: 'cover' }} onError={(e) => { e.currentTarget.src = `https://placehold.co/100x100?text=${encodeURIComponent(product.name)}`; }} />
-                    <div style={{ flex: 1 }}>
-                      <h3 style={{ fontSize: '15px', fontWeight: 700, margin: '0 0 4px 0' }}>{product.name}</h3>
-                      <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 6px 0' }}>{product.category}</p>
-                      <div style={{ display: 'flex', alignItems: 'center' }}>
-                         <span style={{ fontSize: '14px', fontWeight: 800, color: 'var(--accent-blue)' }}>{formatCurrency(Number(product.price))}</span>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
+                {['Burgers', 'Pizzas', 'Fried Chicken & Sides', 'Beverages & Desserts'].map(category => {
+                  const catProducts = products.filter(p => p.category === category);
+                  if (catProducts.length === 0) return null;
+                  
+                  return (
+                    <div key={category}>
+                      <h3 style={{ 
+                        fontSize: '15px', fontWeight: 800, marginBottom: '16px', 
+                        color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)', 
+                        paddingBottom: '8px', textTransform: 'uppercase', letterSpacing: '0.5px' 
+                      }}>
+                        {category}
+                      </h3>
+                      <div className="table-container">
+                        <div className="table-header" style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <div className="text-label" style={{ paddingLeft: '24px' }}>ITEM</div>
+                          <div className="text-label" style={{ paddingRight: '24px' }}>STATUS</div>
+                        </div>
+                        {catProducts.map(product => (
+                          <div key={product.id} className="table-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', opacity: product.is_available ? 1 : 0.6, padding: '16px 0', borderTop: '1px solid var(--border-color)' }}>
+                            <div style={{ paddingLeft: '24px', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{product.name}</div>
+                            <div style={{ paddingRight: '24px', display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+                              <label className="switch" style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px' }}>
+                                 <input type="checkbox" checked={product.is_available} onChange={() => toggleProductAvailability(product.id, product.is_available)} style={{ opacity: 0, width: 0, height: 0 }} />
+                                 <span className="slider" style={{ position: 'absolute', cursor: 'pointer', inset: 0, background: product.is_available ? '#34c759' : '#e2e8f0', transition: '.4s', borderRadius: '24px' }}>
+                                    <span style={{ position: 'absolute', content: '""', height: '18px', width: '18px', left: product.is_available ? '22px' : '3px', bottom: '3px', background: 'white', transition: '.4s', borderRadius: '50%', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}></span>
+                                 </span>
+                              </label>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
-                       <span style={{ fontSize: '11px', fontWeight: 800, color: product.is_available ? 'var(--status-completed)' : 'var(--text-muted)', textTransform: 'uppercase' }}>
-                         {product.is_available ? 'AVAILABLE' : 'SOLD OUT'}
-                       </span>
-                       <label className="switch" style={{ position: 'relative', display: 'inline-block', width: '44px', height: '24px' }}>
-                          <input type="checkbox" checked={product.is_available} onChange={() => toggleProductAvailability(product.id, product.is_available)} style={{ opacity: 0, width: 0, height: 0 }} />
-                          <span className="slider" style={{ position: 'absolute', cursor: 'pointer', inset: 0, background: product.is_available ? '#34c759' : '#e2e8f0', transition: '.4s', borderRadius: '24px' }}>
-                             <span style={{ position: 'absolute', content: '""', height: '18px', width: '18px', left: product.is_available ? '22px' : '3px', bottom: '3px', background: 'white', transition: '.4s', borderRadius: '50%', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}></span>
-                          </span>
-                       </label>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
