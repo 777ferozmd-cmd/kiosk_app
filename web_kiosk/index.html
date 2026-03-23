@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Kiosk Order System</title>
+    <!-- Google Fonts: Outfit -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800;900&display=swap"
+        rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Supabase -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link rel="stylesheet" href="style.css?v=25.0">
+</head>
+
+<body>
+    <div id="app">
+        <!-- Toast Container -->
+        <div id="toast-container" class="toast-container"></div>
+
+        <!-- Views will be injected here -->
+        <div id="view-container"></div>
+
+        <!-- Cart Drawer -->
+        <div id="cart-drawer" class="drawer">
+            <div class="drawer-header">
+                <button id="close-cart" class="icon-btn-plain" style="position: absolute; left: 1.5rem;">
+                    <i data-lucide="arrow-left" size="24"></i>
+                </button>
+                <h2>My Cart</h2>
+                <button class="icon-btn-plain" id="clear-cart-btn" style="position: absolute; right: 1.5rem;">
+                    <i data-lucide="trash-2" size="22"></i>
+                </button>
+            </div>
+
+            <div id="cart-items" class="cart-items-container">
+                <!-- Cart items injected here -->
+            </div>
+
+            <div class="cart-footer">
+                <!-- Injected by JS -->
+            </div>
+        </div>
+        <div id="drawer-overlay" class="overlay hidden"></div>
+
+    </div>
+
+    <!-- Customization Modal -->
+    <div id="modal-container" class="modal-overlay hidden">
+        <div class="modal-card">
+            <!-- Modal content injected by JS -->
+        </div>
+    </div>
+
+    <script src="app.js?v=25.0"></script>
+</body>
+
+</html>
