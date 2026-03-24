@@ -82,11 +82,14 @@ let state = {
     products: [],      // Source of truth for prices — always server-fetched
     discount: 50,
     editingCartItem: null,
-    selectedPayment: null,
     showBillDetails: false,
     isSubmitting: false,
     lastOrderNumber: null,
-    autoResetTimer: null
+    autoResetTimer: null,
+    // Saved customer info for use in payment options view
+    pendingCustomerName: null,
+    pendingCustomerPhone: null,
+    pendingCustomerNotes: null,
 };
 
 // --- Price Integrity: Always compute from server-fetched product catalog ---
@@ -130,6 +133,7 @@ function render() {
                 case 'welcome': renderWelcome(); break;
                 case 'menu': renderMenu(); break;
                 case 'checkout': renderCheckout(); break;
+                case 'payment-options': renderPaymentOptions(); break;
                 case 'success': renderSuccess(); break;
             }
             updateCartUI();
@@ -220,9 +224,48 @@ function renderMenu() {
     `;
 }
 
+// --- Validate and collect customer details from checkout form ---
+function validateCheckoutForm() {
+    const errorName = document.getElementById('error-name');
+    const errorPhone = document.getElementById('error-phone');
+    const errorBanner = document.getElementById('checkout-error-banner');
+    if (errorName) errorName.textContent = '';
+    if (errorPhone) errorPhone.textContent = '';
+    if (errorBanner) errorBanner.classList.add('hidden');
+
+    const rawName = (document.getElementById('customer-name')?.value || '').trim();
+    const rawPhone = (document.getElementById('customer-phone')?.value || '').trim();
+    const rawNotes = (document.getElementById('order-notes')?.value || '').trim();
+
+    const name = sanitize(rawName);
+    const phone = sanitize(rawPhone);
+    const notes = sanitize(rawNotes);
+
+    let hasError = false;
+    if (!name || name.length < 2) {
+        if (errorName) errorName.textContent = 'Please enter your name (min 2 characters)';
+        hasError = true;
+    } else if (name.length > 60) {
+        if (errorName) errorName.textContent = 'Name is too long (max 60 characters)';
+        hasError = true;
+    }
+    if (!phone) {
+        if (errorPhone) errorPhone.textContent = 'Phone is required';
+        hasError = true;
+    } else if (!/^\d{10}$/.test(phone)) {
+        if (errorPhone) errorPhone.textContent = 'Enter a valid 10-digit number';
+        hasError = true;
+    }
+    if (state.cart.length === 0) {
+        showToast('Your cart is empty', 'alert-circle');
+        return null;
+    }
+    if (hasError) return null;
+    return { name, phone, notes };
+}
+
 function renderCheckout() {
     const { subtotal, tax, discount, total } = calculateTotals();
-    const isUPI = state.selectedPayment === 'upi';
     const itemCount = state.cart.reduce((s, i) => s + i.quantity, 0);
 
     viewContainer.innerHTML = `
@@ -270,67 +313,44 @@ function renderCheckout() {
                         </div>
                     </div>
                 </section>
-                <section class="checkout-section">
+                <section class="checkout-section" style="margin-bottom:6rem;">
                     <h2 class="section-title"><i data-lucide="user" size="18"></i> Customer Details</h2>
                     <div class="form-group">
                         <label class="input-label">FULL NAME</label>
-                        <input type="text" placeholder="Your name" id="customer-name" class="form-input" autocomplete="off" maxlength="60">
+                        <input type="text" placeholder="Your name" id="customer-name" class="form-input"
+                            autocomplete="off" maxlength="60"
+                            value="${sanitize(state.pendingCustomerName || '')}">
                         <span id="error-name" class="field-error"></span>
                     </div>
                     <div class="form-group">
                         <label class="input-label">PHONE NUMBER</label>
-                        <input type="tel" placeholder="10-digit phone" id="customer-phone" class="form-input" maxlength="10" inputmode="numeric" autocomplete="off">
+                        <input type="tel" placeholder="10-digit phone" id="customer-phone" class="form-input"
+                            maxlength="10" inputmode="numeric" autocomplete="off"
+                            value="${sanitize(state.pendingCustomerPhone || '')}">
                         <span id="error-phone" class="field-error"></span>
                     </div>
                     <div class="form-group">
                         <label class="input-label">SPECIAL INSTRUCTIONS (OPTIONAL)</label>
-                        <textarea id="order-notes" class="form-input notes-textarea" placeholder="e.g. No onion, extra spicy..." rows="2" maxlength="200"></textarea>
-                    </div>
-                </section>
-                <section class="checkout-section" style="margin-bottom:2rem;">
-                    <h2 class="section-title"><i data-lucide="shield-check" size="18"></i> Choose Payment Method</h2>
-                    <div class="payment-options">
-                        <div class="payment-card ${isUPI ? 'active' : ''}" onclick="selectPayment('upi')">
-                            <div class="payment-card-header">
-                                <div style="display:flex;align-items:center;gap:1rem;">
-                                    <div class="method-icon"><i data-lucide="smartphone" size="20"></i></div>
-                                    <div>
-                                        <p style="font-weight:800;color:#1A202C;margin:0;font-size:1rem;">UPI</p>
-                                        <p style="font-size:0.75rem;color:#718096;margin:0;">Google Pay, PhonePe, Paytm</p>
-                                    </div>
-                                </div>
-                                <div class="radio-new ${isUPI ? 'active' : ''}"></div>
-                            </div>
-                            <div class="upi-apps ${isUPI ? '' : 'collapsed'}">
-                                <div class="upi-app"><div class="upi-icon-wrapper"><img src="https://www.vectorlogo.zone/logos/google_pay/google_pay-icon.svg" alt="GPay"></div><span style="font-size:0.7rem;font-weight:700;color:#4A5568;margin-top:0.5rem;display:block;text-align:center;">GPay</span></div>
-                                <div class="upi-app"><div class="upi-icon-wrapper"><img src="https://download.logo.wine/logo/PhonePe/PhonePe-Logo.wine.png" alt="PhonePe" style="width:44px;object-fit:contain;"></div><span style="font-size:0.7rem;font-weight:700;color:#4A5568;margin-top:0.5rem;display:block;text-align:center;">PhonePe</span></div>
-                                <div class="upi-app"><div class="upi-icon-wrapper"><img src="https://upload.wikimedia.org/wikipedia/commons/4/42/Paytm_logo.png" alt="Paytm" style="width:40px;"></div><span style="font-size:0.7rem;font-weight:700;color:#4A5568;margin-top:0.5rem;display:block;text-align:center;">Paytm</span></div>
-                            </div>
-                        </div>
-                        <div class="payment-card ${state.selectedPayment === 'cards' ? 'active' : ''}" style="margin-top:1rem;" onclick="selectPayment('cards')">
-                            <div class="payment-card-header">
-                                <div style="display:flex;align-items:center;gap:1rem;">
-                                    <div class="method-icon"><i data-lucide="credit-card" size="20"></i></div>
-                                    <div>
-                                        <p style="font-weight:800;color:#1A202C;margin:0;font-size:1rem;">Net Banking / Cards / Wallets</p>
-                                        <p style="font-size:0.75rem;color:#718096;margin:0;">Visa, Mastercard, RuPay, etc.</p>
-                                    </div>
-                                </div>
-                                <div class="radio-new ${state.selectedPayment === 'cards' ? 'active' : ''}"></div>
-                            </div>
-                        </div>
+                        <textarea id="order-notes" class="form-input notes-textarea"
+                            placeholder="e.g. No onion, extra spicy..." rows="2" maxlength="200">${sanitize(state.pendingCustomerNotes || '')}</textarea>
                     </div>
                 </section>
                 <div id="checkout-error-banner" class="checkout-error-banner hidden"></div>
             </div>
+            <!-- Sticky 2-button footer -->
             <div class="checkout-footer-new">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <div>
-                        <p style="font-size:0.75rem;color:#64748B;font-weight:800;text-transform:uppercase;">Total Amount</p>
-                        <p style="font-size:1.75rem;font-weight:900;color:#1A1A1A;margin:0;">${formatCurrency(total)}</p>
-                    </div>
-                    <button id="place-order-btn" class="btn btn-primary" style="padding:1.25rem 2.5rem;border-radius:20px;font-weight:900;font-size:1.1rem;" onclick="placeOrder()" ${state.isSubmitting ? 'disabled' : ''}>
-                        ${state.isSubmitting ? '<span class="btn-spinner"></span> PLACING...' : 'PLACE ORDER'}
+                <div class="checkout-total-row">
+                    <span class="checkout-total-label">Total</span>
+                    <span class="checkout-total-amount">${formatCurrency(total)}</span>
+                </div>
+                <div class="checkout-action-buttons">
+                    <button class="btn btn-pay-counter" onclick="payAtCounter()">
+                        <i data-lucide="store" size="18"></i>
+                        PAY AT COUNTER
+                    </button>
+                    <button class="btn btn-pay-online" onclick="proceedToPayOnline()">
+                        <i data-lucide="smartphone" size="18"></i>
+                        PAY ONLINE
                     </button>
                 </div>
             </div>
@@ -339,92 +359,42 @@ function renderCheckout() {
     updateLucide();
 }
 
-function selectPayment(type) {
-    state.selectedPayment = state.selectedPayment === type ? null : type;
-    renderCheckout();
-}
+// ============================================================
+// ORDER SUBMISSION HELPERS
+// ============================================================
 
-async function placeOrder() {
-    if (state.isSubmitting) return;
-
-    const errorName = document.getElementById('error-name');
-    const errorPhone = document.getElementById('error-phone');
-    const errorBanner = document.getElementById('checkout-error-banner');
-    if (errorName) errorName.textContent = '';
-    if (errorPhone) errorPhone.textContent = '';
-    if (errorBanner) errorBanner.classList.add('hidden');
-
-    // --- Input validation ---
-    const rawName = (document.getElementById('customer-name')?.value || '').trim();
-    const rawPhone = (document.getElementById('customer-phone')?.value || '').trim();
-    const rawNotes = (document.getElementById('order-notes')?.value || '').trim();
-
-    const name = sanitize(rawName);
-    const phone = sanitize(rawPhone);
-    const notes = sanitize(rawNotes);
-
-    let hasError = false;
-    if (!name || name.length < 2) {
-        if (errorName) errorName.textContent = 'Please enter your name (min 2 characters)';
-        hasError = true;
-    } else if (name.length > 60) {
-        if (errorName) errorName.textContent = 'Name is too long (max 60 characters)';
-        hasError = true;
-    }
-    if (!phone) {
-        if (errorPhone) errorPhone.textContent = 'Phone is required';
-        hasError = true;
-    } else if (!/^\d{10}$/.test(phone)) {
-        if (errorPhone) errorPhone.textContent = 'Enter a valid 10-digit number';
-        hasError = true;
-    }
-    if (state.cart.length === 0) {
-        showToast('Your cart is empty', 'alert-circle');
-        return;
-    }
-    if (hasError) return;
-
-    // --- Lock submission immediately ---
-    state.isSubmitting = true;
-    const btn = document.getElementById('place-order-btn');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="btn-spinner"></span> PLACING...'; }
-
-    // --- Price integrity: compute server-side prices from fetched product catalog ---
+/** Build the flat `orderData` and `orderItems` array using server-fetched prices only. */
+function buildOrderPayload(name, phone, notes, paymentMethod, paymentId) {
     const orderId = generateUUID();
     const orderNumber = generateOrderNumber();
     const { subtotal, tax, discount, total } = calculateTotals();
 
-    // Validate totals are sane numbers
-    if (isNaN(subtotal) || subtotal < 0 || isNaN(total) || total < 0) {
-        showToast('Order calculation error. Please try again.', 'alert-circle');
-        state.isSubmitting = false;
-        if (btn) { btn.disabled = false; btn.innerHTML = 'PLACE ORDER'; }
-        return;
-    }
+    if (isNaN(subtotal) || subtotal < 0 || isNaN(total) || total < 0) return null;
 
     const orderData = {
         id: orderId,
         order_number: orderNumber,
         customer_name: name,
         phone: phone,
-        notes: notes.slice(0, 200) || null,
+        notes: notes ? notes.slice(0, 200) : null,
         subtotal: parseFloat(subtotal.toFixed(2)),
         tax: parseFloat(tax.toFixed(2)),
         discount: parseFloat(discount.toFixed(2)),
         total_amount: parseFloat(total.toFixed(2)),
-        status: 'pending'
+        status: 'pending',
+        payment_method: paymentMethod,
+        payment_status: paymentId ? 'paid' : 'pending',
     };
 
-    // Build items using ONLY server-fetched prices
     const orderItems = state.cart.map(item => {
         const base = getBasePrice(item.product.id);
-        const addOns = getAddOnsPrice(item.details?.selectedAddOns || []);
+        const addOnsTotal = getAddOnsPrice(item.details?.selectedAddOns || []);
         const addOnsLabel = item.details?.selectedAddOns?.length > 0
             ? item.details.selectedAddOns.map(a => sanitize(a.name)).join(', ') : null;
         const adjustmentsLabel = item.details?.selectedAdjustments?.length > 0
             ? item.details.selectedAdjustments.map(a => sanitize(a)).join(', ') : null;
         const extras = [addOnsLabel, adjustmentsLabel].filter(Boolean).join(' | ') || null;
-        const unitPrice = base + addOns;
+        const unitPrice = base + addOnsTotal;
         return {
             order_id: orderId,
             product_name: sanitize(item.product.name),
@@ -435,55 +405,219 @@ async function placeOrder() {
         };
     });
 
+    return { orderId, orderNumber, orderData, orderItems };
+}
+
+/** Write the order and its items to Supabase. */
+async function persistOrder(orderData, orderItems) {
+    const orderRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify(orderData)
+    });
+    if (!orderRes.ok) throw new Error(`Order insert failed: ${await orderRes.text()}`);
+
+    const itemsRes = await fetch(`${SUPABASE_URL}/rest/v1/order_items`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+            'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify(orderItems)
+    });
+    if (!itemsRes.ok) throw new Error(`Items insert failed: ${await itemsRes.text()}`);
+}
+
+// ============================================================
+// PAY AT COUNTER
+// ============================================================
+async function payAtCounter() {
+    const form = validateCheckoutForm();
+    if (!form) return;
+    const { name, phone, notes } = form;
+
+    // Save to state so we can prefill if user goes back
+    state.pendingCustomerName = name;
+    state.pendingCustomerPhone = phone;
+    state.pendingCustomerNotes = notes;
+
+    if (state.isSubmitting) return;
+    state.isSubmitting = true;
+
+    // Lock buttons
+    const btns = document.querySelectorAll('.btn-pay-counter, .btn-pay-online');
+    btns.forEach(b => { b.disabled = true; });
+    const counterBtn = document.querySelector('.btn-pay-counter');
+    if (counterBtn) counterBtn.innerHTML = '<span class="btn-spinner"></span> PLACING...';
+
+    const payload = buildOrderPayload(name, phone, notes, 'counter', null);
+    if (!payload) {
+        showToast('Order calculation error. Please try again.', 'alert-circle');
+        state.isSubmitting = false;
+        btns.forEach(b => { b.disabled = false; });
+        if (counterBtn) counterBtn.innerHTML = '<i data-lucide="store" size="18"></i> PAY AT COUNTER';
+        updateLucide();
+        return;
+    }
+
     try {
-        // Insert order
-        const orderRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'apikey': SUPABASE_ANON_KEY,
-                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-                'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify(orderData)
-        });
-        if (!orderRes.ok) throw new Error(`Order insert failed: ${await orderRes.text()}`);
-
-        // Insert order items
-        const itemsRes = await fetch(`${SUPABASE_URL}/rest/v1/order_items`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'apikey': SUPABASE_ANON_KEY,
-                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-                'Prefer': 'return=minimal'
-            },
-            body: JSON.stringify(orderItems)
-        });
-        if (!itemsRes.ok) throw new Error(`Items insert failed: ${await itemsRes.text()}`);
-
-        state.lastOrderNumber = orderNumber;
-        resetCartAndPayment();
-        showToast('Order Placed Successfully!', 'check');
+        await persistOrder(payload.orderData, payload.orderItems);
+        state.lastOrderNumber = payload.orderNumber;
+        resetOrderState();
+        showToast('Order Placed! Pay at the counter.', 'check');
         setView('success');
     } catch (err) {
-        console.error('Order failed:', err);
+        console.error('payAtCounter failed:', err);
         state.isSubmitting = false;
-        if (btn) { btn.disabled = false; btn.innerHTML = 'PLACE ORDER'; }
-        if (errorBanner) {
-            errorBanner.textContent = 'Something went wrong. Please try again.';
-            errorBanner.classList.remove('hidden');
-        }
+        const banner = document.getElementById('checkout-error-banner');
+        if (banner) { banner.textContent = 'Something went wrong. Please try again.'; banner.classList.remove('hidden'); }
         showToast('Order failed. Try again.', 'alert-circle');
+        btns.forEach(b => { b.disabled = false; });
+        if (counterBtn) { counterBtn.innerHTML = '<i data-lucide="store" size="18"></i> PAY AT COUNTER'; updateLucide(); }
     }
 }
 
-function resetCartAndPayment() {
+// ============================================================
+// PAY ONLINE → navigate to Payment Options view
+// ============================================================
+function proceedToPayOnline() {
+    const form = validateCheckoutForm();
+    if (!form) return;
+    const { name, phone, notes } = form;
+    state.pendingCustomerName = name;
+    state.pendingCustomerPhone = phone;
+    state.pendingCustomerNotes = notes;
+    setView('payment-options');
+}
+
+// ============================================================
+// PAYMENT OPTIONS VIEW — UPI only
+// ============================================================
+function renderPaymentOptions() {
+    const { total } = calculateTotals();
+
+    viewContainer.innerHTML = `
+        <div class="screen payment-options-screen">
+            <header class="payment-options-header">
+                <button class="icon-btn-plain" onclick="setView('checkout')">
+                    <i data-lucide="arrow-left" size="24"></i>
+                </button>
+                <div style="flex:1;padding:0 1rem;">
+                    <h1 style="font-size:1.2rem;font-weight:800;color:#1A202C;margin:0;">Payment Options</h1>
+                    <p style="font-size:0.75rem;color:#718096;margin:0;">Secure UPI Payment</p>
+                </div>
+                <div style="text-align:right;">
+                    <p style="font-size:0.7rem;color:#718096;font-weight:600;margin:0;">TO PAY</p>
+                    <p style="font-size:1.2rem;font-weight:900;color:var(--primary);margin:0;">${formatCurrency(total)}</p>
+                </div>
+            </header>
+
+            <div class="payment-options-body">
+                <!-- UPI Section -->
+                <div class="payment-group-label">
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/UPI_logo_initial.svg/1920px-UPI_logo_initial.svg.png" alt="UPI" style="height:18px;object-fit:contain;">
+                    <span>Pay by UPI</span>
+                </div>
+
+                <!-- GPay -->
+                <div class="payment-option-row" id="btn-gpay" onclick="initiateOnlinePayment('Google Pay')">
+                    <div class="payment-option-icon" style="background:#fff;border:1px solid #e8f0fe;">
+                        <img src="https://www.vectorlogo.zone/logos/google_pay/google_pay-icon.svg" alt="Google Pay" style="width:28px;height:28px;object-fit:contain;">
+                    </div>
+                    <div class="payment-option-info">
+                        <span class="payment-option-name">Google Pay</span>
+                        <span class="payment-option-sub">Pay via GPay UPI</span>
+                    </div>
+                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
+                </div>
+
+                <!-- PhonePe -->
+                <div class="payment-option-row" id="btn-phonepe" onclick="initiateOnlinePayment('PhonePe')">
+                    <div class="payment-option-icon" style="background:#f3f0ff;">
+                        <img src="https://www.logo.wine/a/logo/PhonePe/PhonePe-Logo.wine.svg" alt="PhonePe" style="width:32px;height:28px;object-fit:contain;">
+                    </div>
+                    <div class="payment-option-info">
+                        <span class="payment-option-name">PhonePe</span>
+                        <span class="payment-option-sub">Pay via PhonePe UPI</span>
+                    </div>
+                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
+                </div>
+
+                <!-- Paytm -->
+                <div class="payment-option-row" id="btn-paytm" onclick="initiateOnlinePayment('Paytm')">
+                    <div class="payment-option-icon" style="background:#e8f4fd;">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/4/42/Paytm_logo.png" alt="Paytm" style="width:36px;height:24px;object-fit:contain;">
+                    </div>
+                    <div class="payment-option-info">
+                        <span class="payment-option-name">Paytm</span>
+                        <span class="payment-option-sub">Pay via Paytm UPI</span>
+                    </div>
+                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
+                </div>
+
+                <!-- Any UPI App -->
+                <div class="payment-group-label" style="margin-top:1.5rem;">
+                    <i data-lucide="smartphone" size="16" color="#4A5568"></i>
+                    <span>Other UPI Apps</span>
+                </div>
+                <div class="payment-option-row" id="btn-upi-any" onclick="initiateOnlinePayment('UPI')">
+                    <div class="payment-option-icon" style="background:#f0fdf4;">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/UPI_logo_initial.svg/1920px-UPI_logo_initial.svg.png" alt="UPI" style="width:32px;height:24px;object-fit:contain;">
+                    </div>
+                    <div class="payment-option-info">
+                        <span class="payment-option-name">Pay by any UPI app</span>
+                        <span class="payment-option-sub">BHIM, Cred, Amazon Pay & more</span>
+                    </div>
+                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
+                </div>
+
+                <!-- UPI ID Entry -->
+                <div class="payment-group-label" style="margin-top:1.5rem;">
+                    <i data-lucide="at-sign" size="16" color="#4A5568"></i>
+                    <span>Enter UPI ID</span>
+                </div>
+                <div class="upi-id-row">
+                    <input type="text" id="upi-id-input" class="upi-id-input" placeholder="yourname@upi"
+                        inputmode="email" autocomplete="off">
+                    <button class="btn btn-upi-verify" onclick="initiateOnlinePayment('VPA')">
+                        VERIFY &amp; PAY
+                    </button>
+                </div>
+
+                <div id="payment-error-msg" class="payment-error-msg hidden"></div>
+            </div>
+
+            <div id="payment-options-loading" class="payment-options-loading hidden">
+                <div class="payment-spinner"></div>
+                <p>Connecting to payment gateway...</p>
+            </div>
+        </div>
+    `;
+    updateLucide();
+}
+
+// ============================================================
+// ONLINE PAYMENT INTEGRATION (Placeholder)
+// ============================================================
+function initiateOnlinePayment(method) {
+    showToast('Online payments are temporarily disabled for upgrade.', 'alert-circle');
+}
+
+function resetOrderState() {
     state.cart = [];
-    state.selectedPayment = null;
     state.showBillDetails = false;
     state.editingCartItem = null;
     state.isSubmitting = false;
+    state.pendingCustomerName = null;
+    state.pendingCustomerPhone = null;
+    state.pendingCustomerNotes = null;
 }
 
 function renderSuccess() {
@@ -729,12 +863,14 @@ function resetApp() {
     if (state.autoResetTimer) { clearTimeout(state.autoResetTimer); state.autoResetTimer = null; }
     state.cart = [];
     state.orderType = null;
-    state.selectedPayment = null;
     state.selectedCategory = 'Burgers';
     state.showBillDetails = false;
     state.editingCartItem = null;
     state.isSubmitting = false;
     state.lastOrderNumber = null;
+    state.pendingCustomerName = null;
+    state.pendingCustomerPhone = null;
+    state.pendingCustomerNotes = null;
     state.view = 'welcome';
     render();
 }

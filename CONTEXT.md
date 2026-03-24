@@ -24,8 +24,7 @@ The system is divided into two main components:
   - Implemented client-side state reset for the kiosk to clear data between sessions and prevent duplicate submissions.
 - **Menu Management Sync**: Implemented real-time toggling of product availability. When an admin marks an item as "Sold Out" in the dashboard, the kiosk immediately grays out and disables that item.
 - **Order Management**: Admin dashboard allows viewing, searching, and filtering of recent orders.
-- **Razorpay Removal**: All Razorpay-related payment integration code has been removed.
-
+- **Razorpay Removal & Cashfree Prep**: All Razorpay integration code (checkout scripts, edge functions, database columns) has been completely removed from the frontend, backend, and Supabase. The generic "Pay Online" UI structure has been preserved with a placeholder toast message, laying the initial groundwork for an upcoming transition to Cashfree.
 ## Key Files
 - `admin_dashboard/src/lib/supabase.ts`: Supabase client initialization.
 - `web_kiosk/app.js`: Core logic for the kiosk menu, cart, ordering, and client-side validations.
@@ -35,4 +34,4 @@ The system is divided into two main components:
 
 ## Current State & Next Steps
 - **State**: The application is significantly more secure with RLS policies, input validation, and protected admin routes. Real-time menu sync is functional. Admin dashboard features (stats, orders, settings) are implemented.
-- **Next Steps**: Continue refining the order status workflow, thoroughly test the new security boundaries, and potentially add user-facing order status tracking.
+- **Next Steps**: Continue refining the order status workflow, test security boundaries, potentially add user-facing order status tracking, and integrate Cashfree for online payments.
