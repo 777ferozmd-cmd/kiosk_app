@@ -20,6 +20,14 @@ function sanitize(str) {
 }
 
 // --- Helpers ---
+function normalizeImagePath(path) {
+    if (!path) return '';
+    if (path.startsWith('/assets/')) return path;
+    if (path.startsWith('assets/')) return '/' + path;
+    if (!path.startsWith('/') && !path.includes('/')) return '/assets/' + path;
+    return path;
+}
+
 function generateOrderNumber() {
     return `KIOSK-${Math.floor(1000 + Math.random() * 9000)}`;
 }
@@ -186,7 +194,7 @@ function renderMenu() {
                     filteredProducts.map((p, i) => `
                         <div class="product-card ${!p.is_available ? 'sold-out' : ''}" style="animation:fadeUp 0.3s ease-out forwards;animation-delay:${i * 0.03}s;">
                             ${!p.is_available ? '<div class="sold-out-badge">SOLD OUT</div>' : ''}
-                            <img src="${sanitize(p.image)}" alt="${sanitize(p.name)}" class="product-image" loading="lazy">
+                            <img src="${sanitize(normalizeImagePath(p.image))}" alt="${sanitize(p.name)}" class="product-image" loading="lazy">
                             <div class="product-info">
                                 <h3>${sanitize(p.name)}</h3>
                                 <p class="product-desc" style="font-size:0.9rem;color:#718096;margin:0.25rem 0 0.75rem 0;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">${sanitize(p.desc)}</p>
@@ -272,7 +280,7 @@ function renderCheckout() {
                             const itemTotal = (base + addOnsPrice) * item.quantity;
                             return `
                             <div class="checkout-item-row">
-                                <img src="${sanitize(item.product.image)}" alt="${sanitize(item.product.name)}" class="checkout-item-img">
+                                <img src="${sanitize(normalizeImagePath(item.product.image))}" alt="${sanitize(item.product.name)}" class="checkout-item-img">
                                 <div class="checkout-item-details">
                                     <p class="checkout-item-name">${sanitize(item.product.name)}</p>
                                     ${meta ? `<p class="checkout-item-meta">${meta}</p>` : ''}
@@ -652,7 +660,7 @@ function updateCartUI() {
     } else {
         container.innerHTML = state.cart.map(item => `
             <div class="cart-item-card">
-                <img src="${sanitize(item.product.image)}">
+                <img src="${sanitize(normalizeImagePath(item.product.image))}">
                 <div class="item-info">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start;">
                         <h3 style="flex:1;padding-right:0.5rem;">${sanitize(item.product.name)}</h3>
