@@ -1,29 +1,11 @@
+import * as API from './api.js';
+
 // ============================================================
 // KIOSK APP — SECURE, CLEAN, PRODUCTION-READY
 // ============================================================
 
-// --- Security: Block dev tools on public kiosk ---
-document.addEventListener('contextmenu', e => e.preventDefault());
-document.addEventListener('keydown', e => {
-    if (
-        e.key === 'F12' ||
-        (e.ctrlKey && e.shiftKey && ['I', 'J', 'C'].includes(e.key)) ||
-        (e.ctrlKey && e.key === 'U') ||
-        (e.ctrlKey && e.key === 'S')
-    ) {
-        e.preventDefault();
-    }
-});
-
-// --- Supabase Config (public/anon key only — safe for frontend) ---
-const SUPABASE_URL = window.CONFIG?.SUPABASE_URL;
-const SUPABASE_ANON_KEY = window.CONFIG?.SUPABASE_ANON_KEY;
-
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    console.error('Missing Supabase config in window.CONFIG');
-}
-
-const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// Internal security checks disabled for inspection.
+// API configuration moved to api.js
 
 // --- XSS Sanitization ---
 function sanitize(str) {
@@ -133,7 +115,6 @@ function render() {
                 case 'welcome': renderWelcome(); break;
                 case 'menu': renderMenu(); break;
                 case 'checkout': renderCheckout(); break;
-                case 'payment-options': renderPaymentOptions(); break;
                 case 'success': renderSuccess(); break;
             }
             updateCartUI();
@@ -410,29 +391,7 @@ function buildOrderPayload(name, phone, notes, paymentMethod, paymentId) {
 
 /** Write the order and its items to Supabase. */
 async function persistOrder(orderData, orderItems) {
-    const orderRes = await fetch(`${SUPABASE_URL}/rest/v1/orders`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-            'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(orderData)
-    });
-    if (!orderRes.ok) throw new Error(`Order insert failed: ${await orderRes.text()}`);
-
-    const itemsRes = await fetch(`${SUPABASE_URL}/rest/v1/order_items`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'apikey': SUPABASE_ANON_KEY,
-            'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-            'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify(orderItems)
-    });
-    if (!itemsRes.ok) throw new Error(`Items insert failed: ${await itemsRes.text()}`);
+    await API.persistOrder(orderData, orderItems);
 }
 
 // ============================================================
@@ -485,131 +444,118 @@ async function payAtCounter() {
 }
 
 // ============================================================
-// PAY ONLINE → navigate to Payment Options view
+// PAY ONLINE → Cashfree Drop-in Checkout (Sandbox / Test Mode)
 // ============================================================
-function proceedToPayOnline() {
+async function proceedToPayOnline() {
     const form = validateCheckoutForm();
     if (!form) return;
     const { name, phone, notes } = form;
-    state.pendingCustomerName = name;
+
+    state.pendingCustomerName  = name;
     state.pendingCustomerPhone = phone;
     state.pendingCustomerNotes = notes;
-    setView('payment-options');
+
+    if (state.isSubmitting) return;
+    state.isSubmitting = true;
+
+    const btns = document.querySelectorAll('.btn-pay-counter, .btn-pay-online');
+    btns.forEach(b => { b.disabled = true; });
+    const onlineBtn = document.querySelector('.btn-pay-online');
+    if (onlineBtn) onlineBtn.innerHTML = '<span class="btn-spinner"></span> CONNECTING...';
+
+    // Build order payload (uses generateUUID for our internal orderId)
+    const payload = buildOrderPayload(name, phone, notes, 'online', null);
+    if (!payload) {
+        showToast('Order calculation error. Please try again.', 'alert-circle');
+        _unlockOnlineBtn(btns, onlineBtn);
+        return;
+    }
+
+    try {
+        const { total } = calculateTotals();
+
+        // Step 1: Create order on Cashfree (server-side, secret key never exposed)
+        const payment_session_id = await API.createCashfreePaymentSession(payload, total, name, phone);
+        const merchantOrderId = payload.orderId;
+
+        if (onlineBtn) onlineBtn.innerHTML = '<span class="btn-spinner"></span> OPENING PAYMENT...';
+
+        // Step 2: Initialize Cashfree SDK in sandbox mode
+        const cashfree = await Cashfree({ mode: 'sandbox' });
+
+        // Step 3: Open Cashfree Drop-in modal
+        cashfree.checkout({
+            paymentSessionId: payment_session_id,
+            redirectTarget: '_modal',
+        }).then(async (result) => {
+            // result.error means user cancelled or hard payment failure
+            if (result.error) {
+                console.warn('Cashfree modal error:', result.error);
+                showToast(result.error.message || 'Payment was cancelled.', 'alert-circle');
+                _unlockOnlineBtn(btns, onlineBtn);
+                return;
+            }
+
+            // In _modal mode result.redirect is always false and result.paymentDetails
+            // is unreliable in sandbox. ALWAYS verify via Cashfree's GET /orders API.
+            if (onlineBtn) onlineBtn.innerHTML = '<span class="btn-spinner"></span> VERIFYING...';
+
+            try {
+                // Step 4: Server-side verification — the authoritative source of truth
+                const verifyData = await API.verifyCashfreePayment(merchantOrderId);
+
+                if (verifyData.is_paid) {
+                    // Step 5: Payment confirmed — persist to Supabase and show success
+                    showToast('Payment successful!', 'check-circle');
+                    try {
+                        payload.orderData.cashfree_order_id = merchantOrderId;
+                        payload.orderData.payment_status    = 'paid';
+                        if (verifyData.payment_details) {
+                            payload.orderData.payment_details = verifyData.payment_details;
+                        }
+                        await persistOrder(payload.orderData, payload.orderItems);
+                    } catch (dbErr) {
+                        console.error('Order save failed:', dbErr);
+                        // Payment done — show success anyway; webhook will also update DB
+                    }
+                    state.lastOrderNumber = payload.orderNumber;
+                    resetOrderState();
+                    setView('success');
+                } else if (verifyData.order_status === 'ACTIVE') {
+                    showToast('Payment is still processing. Please wait.', 'alert-circle');
+                    _unlockOnlineBtn(btns, onlineBtn);
+                } else {
+                    showToast('Payment was not successful. Please try again.', 'alert-circle');
+                    _unlockOnlineBtn(btns, onlineBtn);
+                }
+            } catch (verifyErr) {
+                console.error('Verification failed:', verifyErr);
+                showToast('Could not verify payment. Please contact staff.', 'alert-circle');
+                _unlockOnlineBtn(btns, onlineBtn);
+            }
+        });
+
+    } catch (err) {
+        console.error('proceedToPayOnline error:', err);
+        const banner = document.getElementById('checkout-error-banner');
+        if (banner) {
+            banner.textContent = err.message || 'Unable to connect to payment gateway. Please try again.';
+            banner.classList.remove('hidden');
+        }
+        showToast('Payment gateway error. Try again.', 'alert-circle');
+        _unlockOnlineBtn(btns, onlineBtn);
+    }
 }
 
-// ============================================================
-// PAYMENT OPTIONS VIEW — UPI only
-// ============================================================
-function renderPaymentOptions() {
-    const { total } = calculateTotals();
-
-    viewContainer.innerHTML = `
-        <div class="screen payment-options-screen">
-            <header class="payment-options-header">
-                <button class="icon-btn-plain" onclick="setView('checkout')">
-                    <i data-lucide="arrow-left" size="24"></i>
-                </button>
-                <div style="flex:1;padding:0 1rem;">
-                    <h1 style="font-size:1.2rem;font-weight:800;color:#1A202C;margin:0;">Payment Options</h1>
-                    <p style="font-size:0.75rem;color:#718096;margin:0;">Secure UPI Payment</p>
-                </div>
-                <div style="text-align:right;">
-                    <p style="font-size:0.7rem;color:#718096;font-weight:600;margin:0;">TO PAY</p>
-                    <p style="font-size:1.2rem;font-weight:900;color:var(--primary);margin:0;">${formatCurrency(total)}</p>
-                </div>
-            </header>
-
-            <div class="payment-options-body">
-                <!-- UPI Section -->
-                <div class="payment-group-label">
-                    <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/UPI_logo_initial.svg/1920px-UPI_logo_initial.svg.png" alt="UPI" style="height:18px;object-fit:contain;">
-                    <span>Pay by UPI</span>
-                </div>
-
-                <!-- GPay -->
-                <div class="payment-option-row" id="btn-gpay" onclick="initiateOnlinePayment('Google Pay')">
-                    <div class="payment-option-icon" style="background:#fff;border:1px solid #e8f0fe;">
-                        <img src="https://www.vectorlogo.zone/logos/google_pay/google_pay-icon.svg" alt="Google Pay" style="width:28px;height:28px;object-fit:contain;">
-                    </div>
-                    <div class="payment-option-info">
-                        <span class="payment-option-name">Google Pay</span>
-                        <span class="payment-option-sub">Pay via GPay UPI</span>
-                    </div>
-                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
-                </div>
-
-                <!-- PhonePe -->
-                <div class="payment-option-row" id="btn-phonepe" onclick="initiateOnlinePayment('PhonePe')">
-                    <div class="payment-option-icon" style="background:#f3f0ff;">
-                        <img src="https://www.logo.wine/a/logo/PhonePe/PhonePe-Logo.wine.svg" alt="PhonePe" style="width:32px;height:28px;object-fit:contain;">
-                    </div>
-                    <div class="payment-option-info">
-                        <span class="payment-option-name">PhonePe</span>
-                        <span class="payment-option-sub">Pay via PhonePe UPI</span>
-                    </div>
-                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
-                </div>
-
-                <!-- Paytm -->
-                <div class="payment-option-row" id="btn-paytm" onclick="initiateOnlinePayment('Paytm')">
-                    <div class="payment-option-icon" style="background:#e8f4fd;">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/4/42/Paytm_logo.png" alt="Paytm" style="width:36px;height:24px;object-fit:contain;">
-                    </div>
-                    <div class="payment-option-info">
-                        <span class="payment-option-name">Paytm</span>
-                        <span class="payment-option-sub">Pay via Paytm UPI</span>
-                    </div>
-                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
-                </div>
-
-                <!-- Any UPI App -->
-                <div class="payment-group-label" style="margin-top:1.5rem;">
-                    <i data-lucide="smartphone" size="16" color="#4A5568"></i>
-                    <span>Other UPI Apps</span>
-                </div>
-                <div class="payment-option-row" id="btn-upi-any" onclick="initiateOnlinePayment('UPI')">
-                    <div class="payment-option-icon" style="background:#f0fdf4;">
-                        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/UPI_logo_initial.svg/1920px-UPI_logo_initial.svg.png" alt="UPI" style="width:32px;height:24px;object-fit:contain;">
-                    </div>
-                    <div class="payment-option-info">
-                        <span class="payment-option-name">Pay by any UPI app</span>
-                        <span class="payment-option-sub">BHIM, Cred, Amazon Pay & more</span>
-                    </div>
-                    <i data-lucide="chevron-right" size="20" color="#CBD5E0"></i>
-                </div>
-
-                <!-- UPI ID Entry -->
-                <div class="payment-group-label" style="margin-top:1.5rem;">
-                    <i data-lucide="at-sign" size="16" color="#4A5568"></i>
-                    <span>Enter UPI ID</span>
-                </div>
-                <div class="upi-id-row">
-                    <input type="text" id="upi-id-input" class="upi-id-input" placeholder="yourname@upi"
-                        inputmode="email" autocomplete="off">
-                    <button class="btn btn-upi-verify" onclick="initiateOnlinePayment('VPA')">
-                        VERIFY &amp; PAY
-                    </button>
-                </div>
-
-                <div id="payment-error-msg" class="payment-error-msg hidden"></div>
-            </div>
-
-            <div id="payment-options-loading" class="payment-options-loading hidden">
-                <div class="payment-spinner"></div>
-                <p>Connecting to payment gateway...</p>
-            </div>
-        </div>
-    `;
-    updateLucide();
+/** Re-enable the PAY ONLINE button after failure or cancellation. */
+function _unlockOnlineBtn(btns, onlineBtn) {
+    state.isSubmitting = false;
+    btns.forEach(b => { b.disabled = false; });
+    if (onlineBtn) {
+        onlineBtn.innerHTML = '<i data-lucide="smartphone" size="18"></i> PAY ONLINE';
+        updateLucide();
+    }
 }
-
-// ============================================================
-// ONLINE PAYMENT INTEGRATION (Placeholder)
-// ============================================================
-function initiateOnlinePayment(method) {
-    showToast('Online payments are temporarily disabled for upgrade.', 'alert-circle');
-}
-
 function resetOrderState() {
     state.cart = [];
     state.showBillDetails = false;
@@ -878,27 +824,17 @@ function resetApp() {
 // --- Supabase helpers ---
 async function fetchSettings() {
     try {
-        const res = await fetch(`${SUPABASE_URL}/rest/v1/settings?id=eq.1`, {
-            headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': `Bearer ${SUPABASE_ANON_KEY}` }
-        });
-        if (res.ok) {
-            const data = await res.json();
-            if (data?.length > 0 && data[0].app_name) {
-                state.appName = sanitize(data[0].app_name.toUpperCase());
-                document.title = data[0].app_name;
-            }
+        const data = await API.fetchSettings();
+        if (data?.length > 0 && data[0].app_name) {
+            state.appName = sanitize(data[0].app_name.toUpperCase());
+            document.title = data[0].app_name;
         }
     } catch (e) { console.error('Failed to fetch settings:', e); }
 }
 
 async function fetchProducts() {
     try {
-        const { data, error } = await supabaseClient
-            .from('products')
-            .select('id,name,category,price,image,desc,has_customization,add_ons,adjustments,is_available')
-            .order('category', { ascending: true })
-            .order('id', { ascending: true });
-        if (error) throw error;
+        const data = await API.fetchProducts();
         state.products = data.map(p => ({
             id: p.id,
             name: p.name,
@@ -915,16 +851,14 @@ async function fetchProducts() {
 }
 
 function setupRealtimeProducts() {
-    supabaseClient.channel('public:products')
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'products' }, payload => {
-            const updated = payload.new;
-            const index = state.products.findIndex(p => p.id === updated.id);
-            if (index !== -1) {
-                state.products[index].is_available = updated.is_available;
-                if (state.view === 'menu') { renderMenu(); updateLucide(); }
-            }
-        })
-        .subscribe();
+    API.subscribeToProductChanges(payload => {
+        const updated = payload.new;
+        const index = state.products.findIndex(p => p.id === updated.id);
+        if (index !== -1) {
+            state.products[index].is_available = updated.is_available;
+            if (state.view === 'menu') { renderMenu(); updateLucide(); }
+        }
+    });
 }
 
 // --- Init ---
@@ -936,4 +870,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     await fetchProducts();
     setupRealtimeProducts();
     render();
+});
+
+
+// Expose functions to global window for inline HTML handlers
+Object.assign(window, {
+    setOrderType,
+    setView,
+    toggleCart,
+    setSelectedCategory,
+    handleAddItemClick,
+    payAtCounter,
+    proceedToPayOnline,
+    resetApp,
+    removeFromCart,
+    openCustomizeModal,
+    updateQty,
+    closeModal,
+    saveCustomization
 });

@@ -1,5 +1,11 @@
-const SUPABASE_URL = 'https://ziiwbevepzfibdhkkthk.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_MO-nZfFn3T2XQKZU-FlbXA_zbSe8DNT';
+import 'dotenv/config';
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || 'https://ziiwbevepzfibdhkkthk.supabase.co';
+const SUPABASE_ANON_KEY = process.env.VITE_SUPABASE_ANON_KEY;
+
+if (!SUPABASE_ANON_KEY) {
+    console.error("Missing VITE_SUPABASE_ANON_KEY in .env");
+    process.exit(1);
+}
 
 const products = [
     // --- BURGERS ---

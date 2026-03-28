@@ -1,14 +1,13 @@
-const fs = require('fs');
+import fs from 'fs';
+import 'dotenv/config';
+
 let code = fs.readFileSync('app.js', 'utf8');
 
 const emptyProducts = `    cart: [],\n    products: [],\n    discount: 50,`;
 code = code.replace(/    cart: \[\],([\s\S]*?)    discount: 50,/, emptyProducts);
 
-const supabaseClientStr = `// --- Supabase Config ---
-const SUPABASE_URL = 'https://ziiwbevepzfibdhkkthk.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_MO-nZfFn3T2XQKZU-FlbXA_zbSe8DNT';
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);`;
-code = code.replace(/\/\/ --- Supabase Config ---\nconst SUPABASE_URL = 'https:\/\/ziiwbevepzfibdhkkthk\.supabase\.co';\nconst SUPABASE_ANON_KEY = 'sb_publishable_MO-nZfFn3T2XQKZU-FlbXA_zbSe8DNT';/, supabaseClientStr);
+const supabaseClientStr = `// API configuration is handled in api.js`;
+code = code.replace(/\/\/ --- Supabase Config ---[\s\S]*?const supabaseClient = window\.supabase\.createClient\(SUPABASE_URL, SUPABASE_ANON_KEY\);/, supabaseClientStr);
 
 const renderCardStr = `            filteredProducts.map((p, i) => \`
                         <div class="product-card \${!p.is_available ? 'sold-out' : ''}" style="animation: fadeUp 0.3s ease-out forwards; animation-delay: \${i * 0.03}s; will-change: transform, opacity;">

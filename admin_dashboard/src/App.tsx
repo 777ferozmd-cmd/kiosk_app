@@ -49,6 +49,9 @@ interface Order {
   discount: number;
   total_amount: number;
   status: 'pending' | 'processing' | 'completed';
+  payment_method: string;
+  payment_status: string;
+  payment_details?: any;
   created_at: string;
   order_items?: OrderItem[];
 }
@@ -238,6 +241,25 @@ const App: React.FC = () => {
     }
   };
 
+  // ── Update Payment Status ──────────────────────
+  const updatePaymentStatus = async (orderId: string, newStatus: string) => {
+    if (!session || !isAdmin) return;
+    setOrders(prev => prev.map(o => o.id === orderId ? { ...o, payment_status: newStatus } : o));
+    setUpdatingStatus(prev => ({ ...prev, [orderId]: true }));
+    try {
+      const { error: err } = await supabase
+        .from('orders')
+        .update({ payment_status: newStatus })
+        .eq('id', orderId);
+      if (err) throw err;
+    } catch (e: any) {
+      alert(`Failed to update payment status: ${e.message}`);
+      fetchOrders();
+    } finally {
+      setUpdatingStatus(prev => ({ ...prev, [orderId]: false }));
+    }
+  };
+
   // ── Derived stats ────────────────────────────
   const stats = useMemo(() => {
     const total = orders.reduce((s, o) => s + Number(o.total_amount), 0);
@@ -288,6 +310,8 @@ const App: React.FC = () => {
         'Tax (₹)',
         'Discount (₹)',
         'Order Total (₹)',
+        'Payment Method',
+        'Payment Status',
         'Status',
         'Notes',
       ],
@@ -331,6 +355,8 @@ const App: React.FC = () => {
             idx === 0 ? String(Number(order.tax).toFixed(2)) : '',
             idx === 0 ? String(Number(order.discount).toFixed(2)) : '',
             idx === 0 ? String(Number(order.total_amount).toFixed(2)) : '',
+            idx === 0 ? (order.payment_method || '').toUpperCase() : '',
+            idx === 0 ? (order.payment_status || '').toUpperCase() : '',
             idx === 0 ? (order.status.charAt(0).toUpperCase() + order.status.slice(1)) : '',
             idx === 0 ? (order.notes ?? '') : '',
           ]);
@@ -740,11 +766,12 @@ const App: React.FC = () => {
           {!loading && !error && (
             <div className="table-container">
               {/* Header */}
-              <div className="table-header" style={{ gridTemplateColumns: '3fr 2fr 1.5fr 1fr 1.5fr 48px' }}>
+              <div className="table-header" style={{ gridTemplateColumns: '3fr 2fr 1.2fr 0.8fr 1.5fr 1.5fr 48px' }}>
                 <div className="text-label" style={{ paddingLeft: '24px' }}>ORDER / ITEMS</div>
                 <div className="text-label">CUSTOMER</div>
                 <div className="text-label">PHONE</div>
                 <div className="text-label">QTY</div>
+                <div className="text-label">PAYMENT</div>
                 <div className="text-label">TOTAL &amp; STATUS</div>
                 <div></div>
               </div>
@@ -764,7 +791,7 @@ const App: React.FC = () => {
                 return (
                   <div key={order.id} className="order-row">
                     {/* Order header row */}
-                    <div className="order-row-header" style={{ gridTemplateColumns: '3fr 2fr 1.5fr 1fr 1.5fr 48px' }} onClick={() => toggleExpand(order.id)}>
+                    <div className="order-row-header" style={{ gridTemplateColumns: '3fr 2fr 1.2fr 0.8fr 1.5fr 1.5fr 48px' }} onClick={() => toggleExpand(order.id)}>
 
                       {/* Order number + time */}
                       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', paddingLeft: '24px' }}>
@@ -789,6 +816,40 @@ const App: React.FC = () => {
                       <div style={{ fontWeight: 500, fontSize: '14px' }}>{order.customer_name}</div>
                       <div style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>{order.phone}</div>
                       <div style={{ fontWeight: 600 }}>{totalQ}</div>
+                      
+                      {/* PAYMENT COLUMN */}
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', textTransform: 'capitalize' }}>
+                          {order.payment_method === 'online' ? 'Online' : 'Counter'}
+                        </div>
+                        <div onClick={e => e.stopPropagation()}>
+                          {order.payment_method === 'online' ? (
+                            <span style={{ 
+                              fontSize: '11px', fontWeight: 700, padding: '4px 8px', borderRadius: '4px',
+                              background: order.payment_status === 'paid' ? 'rgba(52,199,89,0.1)' : 'rgba(255,149,0,0.1)',
+                              color: order.payment_status === 'paid' ? 'var(--status-completed)' : '#ff9500',
+                              display: 'inline-block'
+                            }}>
+                              {order.payment_status === 'paid' ? 'PAID (Cashfree)' : order.payment_status.toUpperCase()}
+                            </span>
+                          ) : (
+                            <select
+                              value={order.payment_status}
+                              onChange={e => updatePaymentStatus(order.id, e.target.value)}
+                              className={`badge-status status-${order.payment_status === 'paid' ? 'completed' : 'pending'}`}
+                              style={{
+                                border: '1px solid var(--border-color)', outline: 'none',
+                                cursor: 'pointer', fontWeight: 600, fontSize: '11px',
+                                background: 'var(--bg-secondary)', textTransform: 'uppercase',
+                                padding: '4px 20px 4px 8px', borderRadius: '4px',
+                              }}
+                            >
+                              <option value="pending" style={{ background: '#1a1b20', color: '#fff' }}>PENDING</option>
+                              <option value="paid" style={{ background: '#1a1b20', color: '#fff' }}>PAID</option>
+                            </select>
+                          )}
+                        </div>
+                      </div>
                       
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         <div style={{ fontWeight: 700 }}>{formatCurrency(Number(order.total_amount))}</div>
@@ -837,8 +898,8 @@ const App: React.FC = () => {
                             const itemKey = item.id;
                             const done = doneItems[itemKey] ?? false;
 
-                            return (
-                              <div key={itemKey} className="product-row" style={{ gridTemplateColumns: '3fr 2fr 1.5fr 1fr 1.5fr 48px' }}>
+                             return (
+                              <div key={itemKey} className="product-row" style={{ gridTemplateColumns: '3fr 2fr 1.2fr 0.8fr 1.5fr 1.5fr 48px' }}>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '14px', paddingLeft: '24px' }}>
                                   {/* Icon placeholder */}
                                   <div style={{
@@ -867,6 +928,7 @@ const App: React.FC = () => {
                                   </div>
                                 </div>
                                 <div></div>
+                                <div></div>
                                 <div style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>×{item.quantity}</div>
                                 <div>
                                   <p style={{ color: 'var(--text-secondary)', fontSize: '13px' }}>
@@ -876,6 +938,7 @@ const App: React.FC = () => {
                                     = {formatCurrency(Number(item.item_total))}
                                   </p>
                                 </div>
+                                <div></div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'flex-end' }}>
                                   <span className="text-label" style={{ fontSize: '10px' }}>DONE</span>
                                   <input
