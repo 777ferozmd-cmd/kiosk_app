@@ -138,7 +138,7 @@ function render() {
 function renderWelcome() {
     viewContainer.innerHTML = `
         <div class="screen welcome-screen">
-            <h1 class="hero-logo">${sanitize(state.appName)}</h1>
+            <h1 class="hero-logo">KIOSK</h1>
             <h2 style="font-size:1.75rem;font-weight:700;margin-bottom:2rem;color:#4A5568;">Ready to Order?</h2>
             <div class="type-buttons">
                 <div class="type-card" onclick="setOrderType('dine-in')">
@@ -251,6 +251,8 @@ function validateCheckoutForm() {
     }
     if (hasError) {
         showToast('Please fill out all required fields correctly', 'alert-circle');
+        const formSection = document.getElementById('customer-name')?.closest('.checkout-section');
+        if (formSection) formSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return null;
     }
     return { name, phone, notes };
