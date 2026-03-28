@@ -895,5 +895,7 @@ Object.assign(window, {
     openCustomizeModal,
     updateQty,
     closeModal,
-    saveCustomization
+    saveCustomization,
+    toggleEditAddOn,
+    toggleEditAdjustment
 });
