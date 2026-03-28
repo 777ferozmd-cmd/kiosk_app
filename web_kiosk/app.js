@@ -249,7 +249,10 @@ function validateCheckoutForm() {
         showToast('Your cart is empty', 'alert-circle');
         return null;
     }
-    if (hasError) return null;
+    if (hasError) {
+        showToast('Please fill out all required fields correctly', 'alert-circle');
+        return null;
+    }
     return { name, phone, notes };
 }
 
